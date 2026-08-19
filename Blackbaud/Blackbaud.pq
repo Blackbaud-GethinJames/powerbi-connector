@@ -11,6 +11,10 @@ shared Blackbaud.Contents = () => GetNavigationTable();
 // Data source Kind description
 Blackbaud = [
     // TestConnection is required to enable the connector through the Gateway
+    // TODO: this reuses the full Navigator build (env detection + branch construction),
+    // unlike the lightweight ping used by the standalone BlackbaudRENXTQuery connector.
+    // Revisit whether this is fine for gateway refresh reliability, or whether it should
+    // be replaced with something cheaper.
     TestConnection = (dataSourcePath) => { "Blackbaud.Contents" },
 
     // Describe the API Authorization implementation
@@ -374,9 +378,20 @@ GetNavigationTable = () as table =>
 
 GetRENXTNavTableRows = () as list =>
     let
-        branches = {branchConstituent, branchGifts, branchFundraising, branchOpportunities, branchLists, branchEvents}
+        branches = {branchConstituent, branchGifts, branchFundraising, branchOpportunities, branchLists, branchEvents},
+        branchRows = GetNavTableRows(branches),
+
+        // add a "Query" folder exposing the RENXT Query feature (folded in from the BlackbaudRENXTQuery connector)
+        queryRow = [
+            Name = Extension.LoadString("queryFolder"),
+            Key = "Query",
+            Data = GetQueryNavTable(),
+            ItemKind = "Folder",
+            ItemName = "Folder",
+            IsLeaf = false
+        ]
     in
-        GetNavTableRows(branches);
+        branchRows & {queryRow};
 
 GetFENXTNavTableRows = () as list =>
     let
@@ -3141,5 +3156,837 @@ CleanUserInputList = (inputList as any) as list =>
         result = List.Distinct(List.RemoveNulls(trimList))
     in
         result;
+
+// =======================================================================================
+// RENXT Query feature
+// Folded in from the BlackbaudRENXTQuery connector, using the "function within Navigator"
+// model: the Query folder in the main Navigator (see GetRENXTNavTableRows above) has
+// direct query-by-ID / ad-hoc leaves, plus a browsable tree of saved queries (by
+// category/type/format).
+//
+// formattingMode, sqlGenerationMode, and outputFormat are intentionally NOT exposed as
+// parameters anywhere in this feature - they are fixed to "UI" / "Query" / "Csv" inside
+// GetQueryResultsTable. If that ever needs to change, it only needs to change in one place.
+// =======================================================================================
+
+Product = "RE";
+Module = "None";
+
+POLL_MAX_RETRIES = 36;
+POLL_DELAY_SECONDS = 5;
+
+// SKY API requires the subscription key on every request; POST query jobs additionally require a JSON content type
+QueryRequestHeaders = DefaultRequestHeaders & [ #"Content-Type" = "application/json" ];
+
+// helper used by the query list endpoint to strip null query-string parameters
+Record.RemoveNullFields = Extension.LoadFunction("Record.RemoveNullFields.pqm");
+
+// --------------------------------------------------------------------------------
+// Direct query functions (Query folder leaves: "Query by ID" / "Ad hoc query")
+// --------------------------------------------------------------------------------
+GetQueryByIdFunction =
+    let
+        impl = (
+            queryId as number,
+            optional timeZoneOffsetInMinutes as nullable number,
+            optional useStaticQuery as nullable logical,
+            optional displayCodeTableLongDescription as nullable logical,
+            optional askFields as nullable text,
+            optional previewData as nullable logical
+        ) as table =>
+            GetQueryResultsTable(queryId, timeZoneOffsetInMinutes, useStaticQuery, displayCodeTableLongDescription, askFields, previewData),
+
+        docs = type function (
+            queryId as QueryIdParameterType,
+            optional timeZoneOffsetInMinutes as TimeZoneOffsetInMinutesParameterType,
+            optional useStaticQuery as UseStaticQueryParameterType,
+            optional displayCodeTableLongDescription as DisplayCodeTableLongDescriptionParameterType,
+            optional askFields as AskFieldsParameterType,
+            optional previewData as PreviewDataParameterType
+        ) as table meta [
+            Documentation.Name = "GetQueryResults",
+            Documentation.LongDescription = Extension.LoadString("QueryByIdFunction.Documentation.LongDescription"),
+            Documentation.Examples = {
+                [
+                    Description = Extension.LoadString("QueryByIdFunction.Example.Description"),
+                    Code = "= GetQueryResults(918, -240, false, false, null, true)",
+                    Result = Extension.LoadString("QueryByIdFunction.Example.Result")
+                ]
+            }
+        ]
+    in
+        Value.ReplaceType(impl, docs);
+
+// askFields is not applicable to ad hoc execution, so it is passed as null to GetQueryResultsTable.
+GetAdHocQueryFunction =
+    let
+        impl = (
+            queryDefinition as text,
+            optional timeZoneOffsetInMinutes as nullable number,
+            optional useStaticQuery as nullable logical,
+            optional displayCodeTableLongDescription as nullable logical,
+            optional previewData as nullable logical
+        ) as table =>
+            GetQueryResultsTable(queryDefinition, timeZoneOffsetInMinutes, useStaticQuery, displayCodeTableLongDescription, null, previewData),
+
+        docs = type function (
+            queryDefinition as QueryDefinitionParameterType,
+            optional timeZoneOffsetInMinutes as TimeZoneOffsetInMinutesParameterType,
+            optional useStaticQuery as UseStaticQueryParameterType,
+            optional displayCodeTableLongDescription as DisplayCodeTableLongDescriptionParameterType,
+            optional previewData as PreviewDataParameterType
+        ) as table meta [
+            Documentation.Name = "GetQueryResults",
+            Documentation.LongDescription = Extension.LoadString("AdHocQueryFunction.Documentation.LongDescription"),
+            Documentation.Examples = {
+                [
+                    Description = Extension.LoadString("AdHocQueryFunction.Example.Description"),
+                    Code = "= GetQueryResults(queryJson, -240, false, false, true)",
+                    Result = Extension.LoadString("AdHocQueryFunction.Example.Result")
+                ]
+            }
+        ]
+    in
+        Value.ReplaceType(impl, docs);
+
+// --------------------------------------------------------------------------------
+// Parameter types with UI metadata
+// --------------------------------------------------------------------------------
+QueryIdParameterType = type number meta [
+    Documentation.FieldCaption = Extension.LoadString("QueryIdParameterType.FieldCaption"),
+    Documentation.FieldDescription = Extension.LoadString("QueryIdParameterType.FieldDescription"),
+    Documentation.SampleValues = {"506, 918"}
+];
+
+QueryDefinitionParameterType = type text meta [
+    Documentation.FieldCaption = Extension.LoadString("QueryDefinitionParameterType.FieldCaption"),
+    Documentation.FieldDescription = Extension.LoadString("QueryDefinitionParameterType.FieldDescription"),
+    Documentation.SampleValues = { Extension.LoadString("QueryDefinitionParameterType.SampleValues") },
+    Formatting.IsMultiLine = true,
+    Formatting.IsCode = true
+];
+
+TimeZoneOffsetInMinutesParameterType = type nullable number meta [
+    Documentation.FieldCaption = Extension.LoadString("TimeZoneOffsetInMinutesParameterType.FieldCaption"),
+    Documentation.FieldDescription = Extension.LoadString("TimeZoneOffsetInMinutesParameterType.FieldDescription"),
+    Documentation.SampleValues = {"-240"}
+];
+
+UseStaticQueryParameterType = type nullable logical meta [
+    Documentation.FieldCaption = Extension.LoadString("UseStaticQueryParameterType.FieldCaption"),
+    Documentation.FieldDescription = Extension.LoadString("UseStaticQueryParameterType.FieldDescription"),
+    Documentation.AllowedValues = {false, true}
+];
+
+DisplayCodeTableLongDescriptionParameterType = type nullable logical meta [
+    Documentation.FieldCaption = Extension.LoadString("DisplayCodeTableLongDescriptionParameterType.FieldCaption"),
+    Documentation.FieldDescription = Extension.LoadString("DisplayCodeTableLongDescriptionParameterType.FieldDescription"),
+    Documentation.AllowedValues = {false, true}
+];
+
+AskFieldsParameterType = type nullable text meta [
+    Documentation.FieldCaption = Extension.LoadString("AskFieldsParameterType.FieldCaption"),
+    Documentation.FieldDescription = Extension.LoadString("AskFieldsParameterType.FieldDescription"),
+    Documentation.SampleValues = { Extension.LoadString("AskFieldsParameterType.SampleValues") },
+    Formatting.IsMultiLine = true,
+    Formatting.IsCode = true
+];
+
+// Used only by the browse-tree curried functions below, where ask fields are required
+// (the query itself declares them as mandatory), unlike the optional AskFieldsParameterType above.
+RequiredAskFieldsParameterType = type text meta [
+    Documentation.FieldCaption = Extension.LoadString("AskFieldsParameterType.FieldCaption"),
+    Documentation.FieldDescription = Extension.LoadString("AskFieldsParameterType.FieldDescription"),
+    Documentation.SampleValues = { Extension.LoadString("AskFieldsParameterType.SampleValues") },
+    Formatting.IsMultiLine = true,
+    Formatting.IsCode = true
+];
+
+PreviewDataParameterType = type nullable logical meta [
+    Documentation.FieldCaption = Extension.LoadString("PreviewDataParameterType.FieldCaption"),
+    Documentation.FieldDescription = Extension.LoadString("PreviewDataParameterType.FieldDescription"),
+    Documentation.AllowedValues = {false, true}
+];
+
+// --------------------------------------------------------------------------------
+// Query navigation tables (Query folder: browse saved queries, or run directly by ID/ad hoc)
+// --------------------------------------------------------------------------------
+GetQueryNavTable = () as table =>
+    let
+        rows = {
+            {"allQueries", GetQueryListNavTable(null, null, null, false, false, false), "Folder", "Folder", false},
+            {"myQueries", GetQueryListNavTable(null, null, null, true, false, false), "Folder", "Folder", false},
+            {"favorites", GetQueryListNavTable(null, null, null, false, true, false), "Folder", "Folder", false},
+            {"mergedQueries", GetQueryListNavTable(null, null, null, false, false, true), "Folder", "Folder", false},
+            {"categories", GetQueryCategoryNavTable(), "Folder", "Folder", false},
+            {"types", GetQueryTypeNavTable(), "Folder", "Folder", false},
+            {"format", GetQueryFormatNavTable(), "Folder", "Folder", false},
+
+            // ItemName = null on Function rows opts them out of Preview.DelayColumn so the
+            // Navigator renders the inline parameter-entry form (see Table.ToNavigationTable.pqm).
+            {"queryById", GetQueryByIdFunction, "Function", null, true},
+            {"adHocQuery", GetAdHocQueryFunction, "Function", null, true}
+        },
+
+        // insert the localized name for each node
+        rowsWithName = List.Transform(rows, each
+            List.InsertRange(_, 0, { Extension.LoadString(_{0}) })
+        ),
+
+        navTable = #table(
+            QueryNavigationTableType,
+            rowsWithName
+        ),
+
+        result = Table.ToNavigationTable(navTable, {"Key"}, "Name", "Data", "ItemKind", "ItemName", "IsLeaf")
+    in
+        result;
+
+GetQueryListNavTable = (
+    categoryId as nullable number,
+    typeId as nullable number,
+    format as nullable text,
+    myQueriesOnly as logical,
+    favoritesOnly as logical,
+    mergedQueriesOnly as logical
+) as table =>
+    let
+        // define a curried function with `id` and `name` bound per row
+        curriedFunction = (queryId as number, name as text) =>
+            let
+                curried = (
+                    optional timeZoneOffsetInMinutes as nullable number,
+                    optional useStaticQuery as nullable logical,
+                    optional displayCodeTableLongDescription as nullable logical,
+                    optional previewData as nullable logical
+                ) =>
+                    GetQueryResultsTable(queryId, timeZoneOffsetInMinutes, useStaticQuery, displayCodeTableLongDescription, null, previewData),
+
+                curriedDocs = type function (
+                    optional timeZoneOffsetInMinutes as TimeZoneOffsetInMinutesParameterType,
+                    optional useStaticQuery as UseStaticQueryParameterType,
+                    optional displayCodeTableLongDescription as DisplayCodeTableLongDescriptionParameterType,
+                    optional previewData as PreviewDataParameterType
+                ) as table meta [
+                    Documentation.Name = "GetQueryResults",
+                    Documentation.LongDescription = Text.Format(
+                        Extension.LoadString("GetQueryResults.Documentation.LongDescriptionName"),
+                        {name}
+                    ),
+                    Documentation.Examples = {
+                        [
+                            Description = Text.Format(
+                                Extension.LoadString("GetQueryListNavTable.Documentation.Description"),
+                                {name}
+                            ),
+                            Code = Text.Format(
+                                "= #""#{0}"".Contents(-240, false, false, true)",
+                                {name}
+                            ),
+                            Result = Text.Format(
+                                Extension.LoadString("GetQueryListNavTable.Documentation.Result"),
+                                {name}
+                            )
+                        ]
+                    }
+                ]
+            in
+                Value.ReplaceType(curried, curriedDocs),
+
+        // define a curried function with required ask fields, `id` and `name` bound per row.
+        // askFields comes first here (not last, unlike the direct GetQueryByIdFunction above)
+        // because M requires optional parameters to trail required ones, and askFields is
+        // genuinely required for queries where it applies.
+        curriedFunctionWithAskFields = (queryId as number, name as text) =>
+            let
+                curried = (
+                    askFields as text,
+                    optional timeZoneOffsetInMinutes as nullable number,
+                    optional useStaticQuery as nullable logical,
+                    optional displayCodeTableLongDescription as nullable logical,
+                    optional previewData as nullable logical
+                ) =>
+                    GetQueryResultsTable(queryId, timeZoneOffsetInMinutes, useStaticQuery, displayCodeTableLongDescription, askFields, previewData),
+
+                curriedDocs = type function (
+                    askFields as RequiredAskFieldsParameterType,
+                    optional timeZoneOffsetInMinutes as TimeZoneOffsetInMinutesParameterType,
+                    optional useStaticQuery as UseStaticQueryParameterType,
+                    optional displayCodeTableLongDescription as DisplayCodeTableLongDescriptionParameterType,
+                    optional previewData as PreviewDataParameterType
+                ) as table meta [
+                    Documentation.Name = "GetQueryResults",
+                    Documentation.LongDescription = Text.Format(
+                        Extension.LoadString("GetQueryResults.Documentation.LongDescriptionName"),
+                        {name}
+                    ),
+                    Documentation.Examples = {
+                        [
+                            Description = Text.Format(
+                                Extension.LoadString("GetQueryListNavTable.Documentation.Description"),
+                                {name}
+                            ),
+                            Code = Text.Format(
+                                "= #""#{0}"".Contents(askFieldsJson, -240, false, false, true)",
+                                {name}
+                            ),
+                            Result = Text.Format(
+                                Extension.LoadString("GetQueryListNavTable.Documentation.Result"),
+                                {name}
+                            )
+                        ]
+                    }
+                ]
+            in
+                Value.ReplaceType(curried, curriedDocs),
+
+        // get the set of queries
+        queries = GetQueryListTable(categoryId, typeId, format, myQueriesOnly, favoritesOnly, mergedQueriesOnly),
+
+        // Transform the table to a list of navigation records
+        navTableList = Table.TransformRows(queries, each [
+            Key = [id],
+            Name = [name],
+            Data =
+                if [has_ask_fields] then
+                    curriedFunctionWithAskFields([id], [name])
+                else
+                    curriedFunction([id], [name]),
+            ItemKind = "Function",
+            // null opts this row out of Preview.DelayColumn so the Navigator renders the
+            // inline parameter-entry form (see Table.ToNavigationTable.pqm).
+            ItemName = null,
+            IsLeaf = true
+        ]),
+
+        // Convert to a list of lists, which is needed for the #table operator
+        rows = List.Transform(navTableList, each {_[Name], _[Key], _[Data], _[ItemKind], _[ItemName], _[IsLeaf]}),
+
+        // Convert the list of records into a proper table (which may be empty)
+        navTable = #table(
+            QueryNavigationTableType,
+            rows
+        ),
+
+        result = Table.ToNavigationTable(navTable, {"Key"}, "Name", "Data", "ItemKind", "ItemName", "IsLeaf")
+    in
+        result;
+
+GetQueryCategoryNavTable = () as table =>
+    let
+        categories = GetQueryCategoryTable(),
+
+        navTableList = Table.TransformRows(categories, each [
+            Key = [id],
+            Name = [name],
+            Data = GetQueryListNavTable([id], null, null, false, false, false),
+            ItemKind = "Folder",
+            ItemName = "Folder",
+            IsLeaf = false
+        ]),
+
+        navTable = Table.FromRecords(navTableList),
+
+        result = Table.ToNavigationTable(navTable, {"Key"}, "Name", "Data", "ItemKind", "ItemName", "IsLeaf")
+    in
+        result;
+
+GetQueryTypeNavTable = () as table =>
+    let
+        types = GetQueryTypeTable(),
+
+        navTableList = Table.TransformRows(types, each [
+            Key = [id],
+            Name = [name],
+            Data = GetQueryListNavTable(null, [id], null, false, false, false),
+            ItemKind = "Folder",
+            ItemName = "Folder",
+            IsLeaf = false
+        ]),
+
+        navTable = Table.FromRecords(navTableList),
+
+        result = Table.ToNavigationTable(navTable, {"Key"}, "Name", "Data", "ItemKind", "ItemName", "IsLeaf")
+    in
+        result;
+
+GetQueryFormatNavTable = () as table =>
+    let
+        formats = {"dynamic", "static"},
+
+        navTableList = List.Transform(formats, each [
+            Key = _,
+            Name = Extension.LoadString(_),
+            Data = GetQueryListNavTable(null, null, _, false, false, false),
+            ItemKind = "Folder",
+            ItemName = "Folder",
+            IsLeaf = false
+        ]),
+
+        navTable = Table.FromRecords(navTableList),
+
+        result = Table.ToNavigationTable(navTable, {"Key"}, "Name", "Data", "ItemKind", "ItemName", "IsLeaf")
+    in
+        result;
+
+// --------------------------------------------------------------------------------
+// Query SKY API functions
+// --------------------------------------------------------------------------------
+
+// https://developer.sky.blackbaud.com/api#api=query&operation=GetQueryCategories
+GetQueryCategoryTable = () as table =>
+    let
+        response = Web.ContentsCustomRetry(
+            BaseUrl,
+            [
+                RelativePath = "/query/categories",
+                Query = [
+                    product = Product,
+                    module = Module
+                ],
+                Headers = DefaultRequestHeaders
+            ]
+        ),
+        bodyJson = Json.Document(response),
+
+        rawTable = Table.FromRecords(bodyJson[categories], null, MissingField.UseNull),
+        result = Table.ChangeType(rawTable, QueryCategoryTableType)
+    in
+        result;
+
+// https://developer.sky.blackbaud.com/api#api=query&operation=GetQueryTypes
+GetQueryTypeTable = () as table =>
+    let
+        response = Web.ContentsCustomRetry(
+            BaseUrl,
+            [
+                RelativePath = "/query/querytypes",
+                Query = [
+                    product = Product,
+                    module = Module
+                ],
+                Headers = DefaultRequestHeaders
+            ]
+        ),
+        bodyJson = Json.Document(response),
+
+        rawTable = Table.FromRecords(bodyJson[query_types], null, MissingField.UseNull),
+        result = Table.ChangeType(rawTable, QueryTypeTableType)
+    in
+        result;
+
+// https://developer.sky.blackbaud.com/api#api=query&operation=GetQueryList
+GetQueryListPageByOffset = (
+    categoryId as nullable number,
+    typeId as nullable number,
+    format as nullable text,
+    myQueriesOnly as logical,
+    favoritesOnly as logical,
+    mergedQueriesOnly as logical,
+    offset as number
+) as table =>
+    let
+        pageSize = 200,
+
+        response = Web.ContentsCustomRetry(
+            BaseUrl,
+            [
+                RelativePath = "/query/queries",
+                Query = Record.RemoveNullFields([
+                    product = Product,
+                    module = Module,
+                    category = TextOrNull(categoryId),
+                    query_type_id = TextOrNull(typeId),
+                    query_format = format,
+                    my_queries_only = TrueOrNull(myQueriesOnly),
+                    my_fav_queries_only = TrueOrNull(favoritesOnly),
+                    merged_queries_only = TrueOrNull(mergedQueriesOnly),
+                    limit = Text.From(pageSize),
+                    offset = Text.From(offset)
+                ]),
+                Headers = DefaultRequestHeaders
+            ]
+        ),
+        bodyJson = Json.Document(response),
+        queries = try bodyJson[queries] otherwise {},
+        count = try bodyJson[count] otherwise 0,
+
+        new_offset =
+            if (count > 0 and count >= offset) then
+                offset + pageSize
+            else
+                count,
+
+        data = Table.FromRecords(queries, null, MissingField.UseNull)
+    in
+        data meta [Count = count, Offset = new_offset];
+
+GetQueryListTable = (
+    categoryId as nullable number,
+    typeId as nullable number,
+    format as nullable text,
+    myQueriesOnly as logical,
+    favoritesOnly as logical,
+    mergedQueriesOnly as logical
+) as table =>
+    let
+        allResults = Table.GenerateByPage((previous) =>
+            let
+                offset =
+                    if (previous = null) then
+                        0
+                    else
+                        Value.Metadata(previous)[Offset]?,
+
+                count =
+                    if (previous = null) then
+                        1
+                    else
+                        Value.Metadata(previous)[Count]?,
+
+                page =
+                    if (count > offset) then
+                        GetQueryListPageByOffset(
+                            categoryId,
+                            typeId,
+                            format,
+                            myQueriesOnly,
+                            favoritesOnly,
+                            mergedQueriesOnly,
+                            offset
+                        )
+                    else
+                        null
+            in
+                page
+        ),
+
+        // filter out queries that can't be executed
+        result = Table.SelectRows(allResults, each
+            [can_execute] = true and
+            (([supported_execution_modes] = "ById") or ([supported_execution_modes] = "Both"))
+        )
+    in
+        result;
+
+// https://developer.sky.blackbaud.com/api#api=query&operation=GetJob
+GetQueryStatus = (jobId as text, retry as number, includeReadUrlMode as text) as record =>
+    let
+        response = Web.ContentsCustomRetry(
+            BaseUrl,
+            [
+                RelativePath = "/query/jobs/" & Text.Trim(jobId),
+                Query = [
+                    product = Product,
+                    module = Module,
+                    include_read_url = includeReadUrlMode,
+                    content_disposition = "Attachment",
+                    _retry = Text.From(retry),
+                    _ts = GetTimestamp()
+                ],
+                Headers = DefaultRequestHeaders
+            ]
+        ),
+        bodyJson = Json.Document(response)
+    in
+        bodyJson;
+
+// https://developer.sky.blackbaud.com/api#api=query&operation=StartQueryExecutionJobByID
+StartQueryJob = (
+    queryId as number,
+    formattingMode as text,
+    sqlGenerationMode as text,
+    outputFormat as text,
+    timeZoneOffsetInMinutes as number,
+    useStaticQuery as logical,
+    displayCodeTableLongDescription as logical,
+    askFields as nullable text
+) as record =>
+    let
+        response = Web.ContentsCustomRetry(
+            BaseUrl,
+            [
+                RelativePath = "/query/queries/executebyid",
+                Query = [
+                    product = Product,
+                    module = Module,
+                    _ts = GetTimestamp()
+                ],
+                Headers = QueryRequestHeaders,
+                Content = Text.ToBinary(
+                    Text.FromBinary(
+                        Json.FromValue([
+                            id = queryId,
+                            ux_mode = "Synchronous",
+                            output_format = outputFormat,
+                            formatting_mode = formattingMode,
+                            sql_generation_mode = sqlGenerationMode,
+                            use_static_query_id_set = useStaticQuery,
+                            display_code_table_long_description = displayCodeTableLongDescription,
+                            time_zone_offset_in_minutes = timeZoneOffsetInMinutes,
+                            ask_fields = if askFields = null then null else Json.Document(askFields)
+                        ])
+                    )
+                )
+            ]
+        ),
+        bodyJson = Json.Document(response)
+    in
+        bodyJson;
+
+// https://developer.sky.blackbaud.com/api#api=query&operation=StartQueryExecutionJob
+StartAdHocQueryJob = (
+    query as text,
+    formattingMode as text,
+    sqlGenerationMode as text,
+    outputFormat as text,
+    timeZoneOffsetInMinutes as number,
+    useStaticQuery as logical,
+    displayCodeTableLongDescription as logical
+) as record =>
+    let
+        response = Web.ContentsCustomRetry(
+            BaseUrl,
+            [
+                RelativePath = "/query/queries/execute",
+                Query = [
+                    product = Product,
+                    module = Module,
+                    _ts = GetTimestamp()
+                ],
+                Headers = QueryRequestHeaders,
+                Content = Text.ToBinary(
+                    Text.FromBinary(
+                        Json.FromValue([
+                            query = Json.Document(query),
+                            ux_mode = "Synchronous",
+                            output_format = outputFormat,
+                            formatting_mode = formattingMode,
+                            sql_generation_mode = sqlGenerationMode,
+                            use_static_query_id_set = useStaticQuery,
+                            display_code_table_long_description = displayCodeTableLongDescription,
+                            time_zone_offset_in_minutes = timeZoneOffsetInMinutes
+                        ])
+                    )
+                )
+            ]
+        ),
+        bodyJson = Json.Document(response)
+    in
+        bodyJson;
+
+OutputFormatToTable = (resultBinary as binary, outputFormat as text) as table =>
+    let
+        _outputFormat = Text.Proper(Text.Lower(Text.Trim(outputFormat))),
+        result =
+            if _outputFormat = "Json" then
+                Table.FromRecords(Json.Document(resultBinary))
+            else if _outputFormat = "Csv" then
+                Table.PromoteHeaders(
+                    Csv.Document(resultBinary, [Delimiter = ",", Encoding = 65001, QuoteStyle = QuoteStyle.Csv]),
+                    [PromoteAllScalars = true]
+                )
+            else if _outputFormat = "Jsonl" then
+                let
+                    text = Text.FromBinary(resultBinary),
+                    lines = List.Select(Text.Split(text, "#(lf)"), each Text.Trim(_) <> ""),
+                    records = List.Transform(lines, each Json.Document(Text.Trim(_)))
+                in
+                    Table.FromRecords(records)
+            else if _outputFormat = "Xlsx" then
+                let
+                    workbook = Excel.Workbook(resultBinary, null, true),
+                    tableOrSheetRows = Table.SelectRows(workbook, each [Kind] = "Table" or [Kind] = "Sheet")
+                in
+                    if Table.RowCount(tableOrSheetRows) = 0 then
+                        error Error.Record("QueryResultsError", "Xlsx output did not contain a readable sheet or table.", [])
+                    else
+                        tableOrSheetRows{0}[Data]
+            else
+                error Error.Record("QueryResultsError", "Unsupported output format. Allowed values are Json, Csv, Jsonl, Xlsx.", [OutputFormat = outputFormat])
+    in
+        result;
+
+GetQueryResultsTable = (
+    queryIdOrDefinition as any,
+    timeZoneOffsetInMinutes as nullable number,
+    useStaticQuery as nullable logical,
+    displayCodeTableLongDescription as nullable logical,
+    askFields as nullable text,
+    optional previewData as nullable logical
+) as table =>
+    let
+        // formattingMode, sqlGenerationMode, and outputFormat are intentionally fixed
+        // (not user-configurable) - see the comment at the top of this feature section.
+        _formattingMode = "UI",
+        _sqlGenerationMode = "Query",
+        _outputFormat = "Csv",
+        _timeZoneOffsetInMinutes = if timeZoneOffsetInMinutes = null then GetTimeZoneOffetMinutes() else timeZoneOffsetInMinutes,
+        _useStaticQuery = if useStaticQuery = null then false else useStaticQuery,
+        _displayCodeTableLongDescription = if displayCodeTableLongDescription = null then false else displayCodeTableLongDescription,
+        _askFields = askFields,
+        _previewData = if previewData = null then false else previewData,
+        _includeReadUrlMode = if _previewData then "OnceRunning" else "OnceCompleted",
+        // start a query execution job
+        startAttempt =
+            Diagnostics.Trace(
+                TraceLevel.Information,
+                "Starting RENXT query request. Mode = " & Text.From(queryIdOrDefinition is number),
+                try
+                    if Type.Is(Value.Type(queryIdOrDefinition), Number.Type) then
+                        StartQueryJob(queryIdOrDefinition, _formattingMode, _sqlGenerationMode, _outputFormat, _timeZoneOffsetInMinutes, _useStaticQuery, _displayCodeTableLongDescription, _askFields)
+                    else
+                        StartAdHocQueryJob(queryIdOrDefinition, _formattingMode, _sqlGenerationMode, _outputFormat, _timeZoneOffsetInMinutes, _useStaticQuery, _displayCodeTableLongDescription)
+            ),
+
+        startJson =
+            if startAttempt[HasError] then
+                error Error.Record(
+                    "QueryStartError",
+                    Extension.LoadString("queryStartFailedNoJobId"),
+                    [
+                        JobId = null,
+                        OriginalError = startAttempt[Error]
+                    ]
+                )
+            else
+                startAttempt[Value],
+
+        jobId = Diagnostics.Trace(TraceLevel.Information, "Started query execution job. Job ID = " & Text.From(startJson[id]), startJson[id]),
+
+        // define a recursive function to poll for the job status
+        pollJob = (retry as number, maxRetries as number, pollSeconds as number) =>
+            let
+                timestamp = DateTime.ToText(DateTime.LocalNow(), "yyyy-MM-dd HH:mm:ss"),
+                _ = if retry > maxRetries then error Error.Record("QueryJobError", Text.Format(Extension.LoadString("maxRetriesExceededWithJobId"), {jobId}), [JobId = jobId]) else null,
+
+                statusJson = Diagnostics.Trace(TraceLevel.Information, timestamp & " - Polling job status. Attempt = " & Text.From(retry), GetQueryStatus(jobId, retry, _includeReadUrlMode)),
+                status = Diagnostics.Trace(TraceLevel.Information, timestamp & " - Polling attempt " & Text.From(retry) & ": Last status = " & statusJson[status], statusJson[status]),
+                readUri =
+                    if Record.HasFields(statusJson, {"read_url"}) and statusJson[read_url] <> null then
+                        statusJson[read_url]
+                    else if Record.HasFields(statusJson, {"sas_uri"}) and statusJson[sas_uri] <> null then
+                        statusJson[sas_uri]
+                    else
+                        null
+            in
+                if status = "Completed" then
+                    statusJson
+                else if _previewData and readUri <> null then
+                    statusJson & [sas_uri = readUri]
+                else if status = "Cancelled" then
+                    error Error.Record("QueryJobError", Text.Format(Extension.LoadString("queryJobCanceledWithJobId"), {jobId}), [JobId = jobId])
+                else if status = "Failed" then
+                    error Error.Record("QueryJobError", Text.Format(Extension.LoadString("queryJobFailedWithJobId"), {jobId}), [JobId = jobId])
+                else
+                    // otherwise, poll again after delaying
+                    Function.InvokeAfter(() =>
+                        @pollJob(retry + 1, maxRetries, pollSeconds),
+                        #duration(0, 0, 0, pollSeconds)
+                    ),
+
+        // poll the query job status
+        jobResultJson = pollJob(0, POLL_MAX_RETRIES, POLL_DELAY_SECONDS),
+
+        // fetch the query results from the SAS URI returned when the job completes
+        sasUri =
+            if Record.HasFields(jobResultJson, {"sas_uri"}) and jobResultJson[sas_uri] <> null then
+                jobResultJson[sas_uri]
+            else
+                error Error.Record("QueryResultsError", "Query job did not return a readable results URI.", [JobId = jobId]),
+        resultBinary = Web.Contents(sasUri),
+        result = OutputFormatToTable(resultBinary, _outputFormat),
+        finalResult = Diagnostics.Trace(TraceLevel.Information, "Fetched query results. Row count = " & Text.From(Table.RowCount(result)), result meta [JobId = jobId])
+    in
+        finalResult;
+
+// --------------------------------------------------------------------------------
+// Query misc functions
+// --------------------------------------------------------------------------------
+
+// Return "true" if the given value is true, otherwise null
+TrueOrNull = (b as nullable logical) =>
+    let
+        result = if b = true then "true" else null
+    in
+        result;
+
+// Convert the given value to text or return null
+TextOrNull = (value as any) =>
+    let
+        result = if value = null then null else Text.From(value)
+    in
+        result;
+
+// The intent of this is to include an ever-changing parameter in API requests to prevent Power Query caching from interfering
+// with polling (without this, the request looks to be "the same" as one already submitted so the cached response is used).
+// This also ensures that a query is executed each time it is invoked instead of using a cached result.
+GetTimestamp = () as text =>
+    let
+        utcNow = DateTimeZone.UtcNow(),
+        epoch = #datetimezone(1970, 1, 1, 0, 0, 0, 0, 0),
+        duration = utcNow - epoch,
+
+        // Extract milliseconds from the fractional seconds
+        secondsWithFraction = Duration.Seconds(duration),
+        wholeSeconds = Number.RoundDown(secondsWithFraction),
+        fractionalSeconds = secondsWithFraction - wholeSeconds,
+        ms = Number.RoundDown(fractionalSeconds * 1000),
+
+        totalMs =
+            Duration.Days(duration) * 86400000 +
+            Duration.Hours(duration) * 3600000 +
+            Duration.Minutes(duration) * 60000 +
+            wholeSeconds * 1000 +
+            ms,
+            result = Number.ToText(totalMs)
+    in
+        result;
+
+// Get the current local timezone offset in minutes
+GetTimeZoneOffetMinutes = () as number =>
+    let
+        // Get the current local time (this will have the local timezone information if run in Desktop)
+        localTimeWithZone = DateTimeZone.LocalNow(),
+
+        // Get the offset hours from the local time
+        offsetHours = DateTimeZone.ZoneHours(localTimeWithZone),
+
+        // Get the offset minutes from the local time
+        offsetMinutes = DateTimeZone.ZoneMinutes(localTimeWithZone),
+
+        // computed the (signed) offset in minutes
+        result = (offsetHours * 60) + offsetMinutes
+    in
+        result;
+
+// --------------------------------------------------------------------------------
+// Query table type definitions
+// --------------------------------------------------------------------------------
+
+// https://learn.microsoft.com/en-us/power-query/handling-navigation-tables
+// ItemName is nullable: Function rows set it to null to opt out of Preview.DelayColumn
+// (see Table.ToNavigationTable.pqm), while Folder rows keep text to stay lazy.
+QueryNavigationTableType = type table [
+    Name = text,
+    Key = any,
+    Data = function,
+    ItemKind = text,
+    ItemName = nullable text,
+    IsLeaf = logical
+];
+
+// https://developer.sky.blackbaud.com/api#api=query&operation=GetQueryCategories
+QueryCategoryTableType = type table [
+    id = number,
+    name = nullable text,
+    sequence = nullable number
+];
+
+// https://developer.sky.blackbaud.com/api#api=query&operation=GetQueryTypes
+QueryTypeTableType = type table [
+    id = number,
+    name = nullable text
+];
 
 // ------ End Internal Helper Functions -----

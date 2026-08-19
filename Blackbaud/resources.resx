@@ -129,4 +129,136 @@
   <data name="DataSourceLabel" xml:space="preserve">
     <value>Connect to your Blackbaud environment</value>
   </data>
+  <!-- RENXT Query feature -->
+  <data name="queryFolder" xml:space="preserve">
+    <value>Query</value>
+  </data>
+  <data name="allQueries" xml:space="preserve">
+    <value>All queries</value>
+  </data>
+  <data name="myQueries" xml:space="preserve">
+    <value>My queries</value>
+  </data>
+  <data name="favorites" xml:space="preserve">
+    <value>Favorites</value>
+  </data>
+  <data name="mergedQueries" xml:space="preserve">
+    <value>Merged queries</value>
+  </data>
+  <data name="categories" xml:space="preserve">
+    <value>Categories</value>
+  </data>
+  <data name="types" xml:space="preserve">
+    <value>Types</value>
+  </data>
+  <data name="format" xml:space="preserve">
+    <value>Format</value>
+  </data>
+  <data name="dynamic" xml:space="preserve">
+    <value>Dynamic</value>
+  </data>
+  <data name="static" xml:space="preserve">
+    <value>Static</value>
+  </data>
+  <data name="queryById" xml:space="preserve">
+    <value>Query by ID</value>
+  </data>
+  <data name="adHocQuery" xml:space="preserve">
+    <value>Ad hoc query</value>
+  </data>
+  <data name="QueryByIdFunction.Documentation.LongDescription" xml:space="preserve">
+    <value>Returns the results of a saved Raiser's Edge NXT query identified by its system record ID.</value>
+  </data>
+  <data name="QueryByIdFunction.Example.Description" xml:space="preserve">
+    <value>Provide the system record identifier of the desired query.</value>
+  </data>
+  <data name="QueryByIdFunction.Example.Result" xml:space="preserve">
+    <value>Returns the results of the Raiser's Edge NXT query with ID = 918.</value>
+  </data>
+  <data name="AdHocQueryFunction.Documentation.LongDescription" xml:space="preserve">
+    <value>Returns the results of an ad hoc Raiser's Edge NXT query supplied as a JSON definition.</value>
+  </data>
+  <data name="AdHocQueryFunction.Example.Description" xml:space="preserve">
+    <value>Provide the JSON representation of the ad hoc query definition.</value>
+  </data>
+  <data name="AdHocQueryFunction.Example.Result" xml:space="preserve">
+    <value>Returns the results of the supplied ad hoc query.</value>
+  </data>
+  <data name="GetQueryResults.Documentation.LongDescriptionName" xml:space="preserve">
+    <value>Returns the results of the "#{0}" Raiser's Edge NXT query.</value>
+  </data>
+  <data name="GetQueryListNavTable.Documentation.Description" xml:space="preserve">
+    <value>Runs the "#{0}" query.</value>
+  </data>
+  <data name="GetQueryListNavTable.Documentation.Result" xml:space="preserve">
+    <value>Returns the results of the "#{0}" query.</value>
+  </data>
+  <data name="QueryIdParameterType.FieldCaption" xml:space="preserve">
+    <value>Query ID</value>
+  </data>
+  <data name="QueryIdParameterType.FieldDescription" xml:space="preserve">
+    <value>The system record ID of the Raiser's Edge NXT query to execute.</value>
+  </data>
+  <data name="QueryDefinitionParameterType.FieldCaption" xml:space="preserve">
+    <value>Adhoc Query JSON</value>
+  </data>
+  <data name="QueryDefinitionParameterType.FieldDescription" xml:space="preserve">
+    <value>The JSON representation of the ad hoc query definition.</value>
+  </data>
+  <data name="QueryDefinitionParameterType.SampleValues" xml:space="preserve">
+    <value>{ The query definition JSON }</value>
+  </data>
+  <data name="TimeZoneOffsetInMinutesParameterType.FieldCaption" xml:space="preserve">
+    <value>Timezone Offset (minutes)</value>
+  </data>
+  <data name="TimeZoneOffsetInMinutesParameterType.FieldDescription" xml:space="preserve">
+    <value>Time difference from UTC in minutes (e.g. -240 for EDT, 0 for UTC).  If not specified, this will be calculated based on the local time (including the offset from UTC).</value>
+  </data>
+  <data name="UseStaticQueryParameterType.FieldCaption" xml:space="preserve">
+    <value>Use static query?</value>
+  </data>
+  <data name="UseStaticQueryParameterType.FieldDescription" xml:space="preserve">
+    <value>Use the static query as the source of records (if not, the query will be executed dynamically)?</value>
+  </data>
+  <data name="DisplayCodeTableLongDescriptionParameterType.FieldCaption" xml:space="preserve">
+    <value>Display code table long descriptions?</value>
+  </data>
+  <data name="DisplayCodeTableLongDescriptionParameterType.FieldDescription" xml:space="preserve">
+    <value>Display code table entries by long description?</value>
+  </data>
+  <data name="AskFieldsParameterType.FieldCaption" xml:space="preserve">
+    <value>Ask fields</value>
+  </data>
+  <data name="AskFieldsParameterType.FieldDescription" xml:space="preserve">
+    <value>The JSON representation of the ask fields for the query.</value>
+  </data>
+  <data name="AskFieldsParameterType.SampleValues" xml:space="preserve">
+    <value>
+[{
+  "query_field_id": 424,
+  "filter_values": ["Robert"],
+  "operator": "Equals",
+  "use_any_value": false
+}]
+    </value>
+  </data>
+  <data name="PreviewDataParameterType.FieldCaption" xml:space="preserve">
+    <value>Preview data</value>
+  </data>
+  <data name="PreviewDataParameterType.FieldDescription" xml:space="preserve">
+    <value>When true, polling requests include_read_url as OnceRunning and return data as soon as a read URI is available. Turn this off for full refreshes.</value>
+  </data>
+  <!-- RENXT Query feature errors -->
+  <data name="queryStartFailedNoJobId" xml:space="preserve">
+    <value>Failed to submit query job. No Job ID was returned by the API.</value>
+  </data>
+  <data name="queryJobCanceledWithJobId" xml:space="preserve">
+    <value>The RENXT query job was cancelled. Job ID: #{0}</value>
+  </data>
+  <data name="queryJobFailedWithJobId" xml:space="preserve">
+    <value>The RENXT query job failed. Job ID: #{0}. Please check the query definition and try again.</value>
+  </data>
+  <data name="maxRetriesExceededWithJobId" xml:space="preserve">
+    <value>Exceeded maximum retries waiting for RENXT query job to complete. Job ID: #{0}</value>
+  </data>
 </root>
