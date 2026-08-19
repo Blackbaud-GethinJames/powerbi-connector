@@ -426,8 +426,13 @@ NXTNavTable = (branch as text) as table =>
         withData = Table.AddColumn(rename, "Data", each if Value.Is([Endpoint], type text) then GetEntity(Uri.Combine(BaseUrl, [Endpoint]), [Name]) else [Endpoint], type table),
 
         // Add ItemKind and ItemName as fixed text values.
+        // ItemName drives Preview.DelayColumn (see Table.ToNavigationTable.pqm): a text value
+        // delays previewing of the row's Data, a null value does not. Table and Folder rows
+        // keep text so their (expensive) API calls / nested nav tables stay lazy. Function
+        // rows use null - a delayed function row renders as static text instead of the
+        // invocation UI, leaving no way to supply arguments or run it.
         withItemKind = Table.AddColumn(withData, "ItemKind", each if Value.Is([Endpoint], type text) then "Table" else if [Type] <> null then "Function" else "Folder", type text),
-        withItemName = Table.AddColumn(withItemKind, "ItemName", each if Value.Is([Endpoint], type text) then "Table" else if [Type] <> null then "Function" else "Folder", type text),
+        withItemName = Table.AddColumn(withItemKind, "ItemName", each if Value.Is([Endpoint], type text) then "Table" else if [Type] <> null then null else "Folder", type nullable text),
 
         // Indicate that the node should either be a leaf, as in not expandable, or a further expandable
         withIsLeaf = Table.AddColumn(withItemName, "IsLeaf", each (Value.Is([Endpoint], type text) or [Type] <> null), type logical),
