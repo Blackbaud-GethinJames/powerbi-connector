@@ -332,10 +332,15 @@ GetRecordCount = (body) as nullable number =>
     else 
         0;
 
-GetResponseRecords = (body) as nullable any => 
-    if Value.Is(body, type record) then 
-        Record.FieldOrDefault(body, "value", body) 
-    else 
+GetResponseRecords = (body) as nullable any =>
+    if Value.Is(body, type record) then
+        // Most SKY API list endpoints wrap their records in a "value" field. A handful of
+        // endpoints outside the RENXT product line use their own field name instead - e.g.
+        // the Consent API's "constituent_consents". "value" is checked first and unconditionally,
+        // so every existing endpoint's behavior is unchanged; the second field name is only
+        // consulted when "value" is absent.
+        Record.FieldOrDefault(body, "value", Record.FieldOrDefault(body, "constituent_consents", body))
+    else
         body;
 
 // ---------------------------------------------------------------
@@ -537,6 +542,10 @@ SchemaTable = #table(
         {"Constituent relationships", RelationshipListType, "constituent/v1/relationships", branchConstituent, RelationshipsLayout, DefaultRecLimit, true},
         {"Constituent code types", null, "constituent/v1/constituentcodetypes", branchConstituent, null, DefaultRecLimit, true},
         {"Constituent custom field categories", CustomFieldCategoryType, "constituent/v1/constituents/customfields/categories/details ", branchConstituent, null, DefaultRecLimit, true},
+        // Separate Consent API (api.sky.blackbaud.com/consent), not the Constituent API. Paginated
+        // by offset/count like most endpoints (HasNextLink = false), but its records are wrapped in
+        // a "constituent_consents" field instead of the usual "value" - see GetResponseRecords.
+        {"Constituent consents", null, "consent/constituents/consents", branchConstituent, null, DefaultRecLimit, false},
         {"Public Lists", null, CreateListsNavTable("Constituent", true, ConstituentByList), branchConstituent, null, null, null},
         {"My Private Lists", null, CreateListsNavTable("Constituent", false, ConstituentByList), branchConstituent, null, null, null},
 
