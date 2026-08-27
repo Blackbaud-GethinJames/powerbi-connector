@@ -578,6 +578,7 @@ SchemaTable = #table(
 
         // Event
         {"Event", EventListType, "event/v1/eventlist?include_inactive=true", branchEvents, EventLayout, 500, true},
+        {"Event participants (by event ID)", EventParticipantListType, EventParticipantsByEventId.Contents, branchEvents, null, DefaultRecLimit, false},
 
         // General Ledger
         {"Account", AccountSearchType, "generalledger/v1/accounts", branchGeneralLedger, AccountLayout, DefaultRecLimit, false},
@@ -1949,6 +1950,102 @@ EventCategoryType = type [
     category_name = nullable text,
     category_inactive = nullable logical
 ];
+
+ParticipationLevelType = type [
+    id = nullable text,
+    name = nullable text,
+    is_inactive = nullable logical
+];
+
+// Event Participant List - https://developer.sky.blackbaud.com/docs/services/event/operations/GetEventParticipantList
+//
+// Typed explicitly (rather than schema = null) so every page - across every event - gets the same
+// column set, with nulls filled in for fields absent from a given response. Without this, Power
+// Query's "Invoke Custom Function" + Expand pattern breaks: the Expand step is generated from one
+// preview row's columns, and any other row missing a column (e.g. a participant with no email)
+// throws "The field 'x' of the record wasn't found." Genuinely complex/nested fields (host, guests,
+// memberships, participant_options, registration_form, fees) are left as `any` rather than fully
+// modelled - they still come through and can be expanded by the user, just without type coercion.
+EventParticipantListType = type table [
+    id = nullable text,
+    contact_id = nullable text,
+    date_added = nullable datetimezone,
+    date_modified = nullable datetimezone,
+    is_constituent = nullable logical,
+    lookup_id = nullable text,
+    name = nullable text,
+    first_name = nullable text,
+    middle_name = nullable text,
+    last_name = nullable text,
+    preferred_name = nullable text,
+    former_name = nullable text,
+    title = nullable text,
+    suffix = nullable text,
+    class_of = nullable text,
+    phone = nullable text,
+    do_not_call = nullable logical,
+    email = nullable text,
+    do_not_email = nullable logical,
+    participation_level = nullable ParticipationLevelType,
+    attended = nullable logical,
+    rsvp_status = nullable text,
+    invitation_status = nullable text,
+    rsvp_date = nullable FuzzyDateType,
+    total_paid = nullable number,
+    host = nullable any,
+    guests = nullable any,
+    seat = nullable text,
+    seating_notes = nullable text,
+    seating_group = nullable text,
+    name_tag = nullable text,
+    summary_note = nullable text,
+    memberships = nullable any,
+    participant_options = nullable any,
+    registration_form = nullable any,
+    donations = nullable number,
+    revenue = nullable number,
+    online_data_health = nullable text,
+    total_fees = nullable number,
+    fees = nullable any
+];
+
+// 9.4. Bulk extraction helpers
+//
+// Event participants are the only parameterised (parent-scoped) RENXT endpoint judged worth a
+// bulk-extraction shortcut: every other parameterised endpoint is constituent-scoped, and looping
+// it over an entire constituent population would be an excessive number of API calls.
+//
+// A connector-side "all events" fan-out function was also tried here, but Power Query's own
+// "Invoke Custom Function" + Expand pattern against this function (driven from the Event table's
+// id column) proved noticeably more responsive in the query editor - it plays well with Power
+// Query's step-by-step preview, where the connector-side fan-out does not. The all-in-one version
+// was removed in favour of this building-block one.
+shared EventParticipantsByEventId.Contents = Value.ReplaceType(EventParticipantsByEventId, EventParticipantsByEventIdDocs);
+
+EventParticipantsByEventIdDocs = type function (
+    eventId as (type text meta [
+        Documentation.FieldCaption = "Event Id",
+        Documentation.FieldDescription = "The id of the event whose participants should be returned. Use the id column value from the Event table.",
+        Documentation.SampleValues = {"<enter an event id here>"}
+    ]))
+    as table meta [
+        Documentation.Name = "Event participants (by event ID)",
+        Documentation.LongDescription = "Returns the participants of a single event, identified by its event ID. Intended to be invoked once per event via Power Query's Invoke Custom Function against the Event table's id column, then expanded.",
+        Documentation.Examples = {
+        [
+            Description = "Use the id column value, from the Event table, corresponding to the event you want participants for",
+            Code = "= #""Event participants (by event ID)"".Contents(""XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"")",
+            Result = "Returns participants limited to only those included in the specified event"
+        ]}
+    ];
+
+EventParticipantsByEventId = (eventId as text) as table =>
+    let
+        participantsUrl = Uri.Combine(BaseUrl, "event/v1/events/" & eventId & "/participants"),
+        participants = GetAllPagesByOffset(participantsUrl, EventParticipantListType, DefaultRecLimit),
+        appliedSchema = Table.ChangeType(participants, EventParticipantListType)
+    in
+        appliedSchema;
 
 // ------ End Type Definitions -----
 
