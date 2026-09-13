@@ -130,8 +130,26 @@
     <value>Connect to your Blackbaud environment</value>
   </data>
   <!-- RENXT Query feature -->
-  <data name="queryFolder" xml:space="preserve">
-    <value>Query</value>
+  <data name="raisersEdgeNXTQueryFolder" xml:space="preserve">
+    <value>Query - Raiser's Edge NXT</value>
+  </data>
+  <data name="financialEdgeNXTQueryFolder" xml:space="preserve">
+    <value>Query - Financial Edge NXT</value>
+  </data>
+  <data name="GeneralLedger" xml:space="preserve">
+    <value>General Ledger</value>
+  </data>
+  <data name="AccountsPayable" xml:space="preserve">
+    <value>Accounts Payable</value>
+  </data>
+  <data name="AccountsReceivable" xml:space="preserve">
+    <value>Accounts Receivable</value>
+  </data>
+  <data name="FixedAssets" xml:space="preserve">
+    <value>Fixed Assets</value>
+  </data>
+  <data name="CashReceipts" xml:space="preserve">
+    <value>Cash Receipts</value>
   </data>
   <data name="allQueries" xml:space="preserve">
     <value>All queries</value>
@@ -197,7 +215,13 @@
     <value>Query ID</value>
   </data>
   <data name="QueryIdParameterType.FieldDescription" xml:space="preserve">
-    <value>The system record ID of the Raiser's Edge NXT query to execute.</value>
+    <value>The system record ID of the query to execute.</value>
+  </data>
+  <data name="FEModuleParameterType.FieldCaption" xml:space="preserve">
+    <value>Module</value>
+  </data>
+  <data name="FEModuleParameterType.FieldDescription" xml:space="preserve">
+    <value>The Financial Edge NXT module the query belongs to.</value>
   </data>
   <data name="QueryDefinitionParameterType.FieldCaption" xml:space="preserve">
     <value>Adhoc Query JSON</value>

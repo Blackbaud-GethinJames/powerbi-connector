@@ -386,11 +386,13 @@ GetRENXTNavTableRows = () as list =>
         branches = {branchConstituent, branchGifts, branchFundraising, branchOpportunities, branchLists, branchEvents},
         branchRows = GetNavTableRows(branches),
 
-        // add a "Query" folder exposing the RENXT Query feature (folded in from the BlackbaudRENXTQuery connector)
+        // add a "Raiser's Edge NXT Query" folder exposing the RENXT Query feature (folded in from
+        // the BlackbaudRENXTQuery connector). Module is always "None" for RE - see
+        // GetFENXTNavTableRows below for the FE counterpart, which requires a module.
         queryRow = [
-            Name = Extension.LoadString("queryFolder"),
-            Key = "Query",
-            Data = GetQueryNavTable(),
+            Name = Extension.LoadString("raisersEdgeNXTQueryFolder"),
+            Key = "RaisersEdgeNXTQuery",
+            Data = GetQueryNavTable("RE", "None"),
             ItemKind = "Folder",
             ItemName = "Folder",
             IsLeaf = false
@@ -400,9 +402,22 @@ GetRENXTNavTableRows = () as list =>
 
 GetFENXTNavTableRows = () as list =>
     let
-        branches = {branchGeneralLedger}
+        branches = {branchGeneralLedger},
+        branchRows = GetNavTableRows(branches),
+
+        // add a "Financial Edge NXT Query" folder exposing the same Query feature as RE above, but
+        // FE queries require an explicit module (there is no "None" module for FE) - so this is a
+        // folder of modules, each containing its own full copy of the browse/query structure.
+        queryRow = [
+            Name = Extension.LoadString("financialEdgeNXTQueryFolder"),
+            Key = "FinancialEdgeNXTQuery",
+            Data = GetFEQueryModuleNavTable(),
+            ItemKind = "Folder",
+            ItemName = "Folder",
+            IsLeaf = false
+        ]
     in
-        GetNavTableRows(branches);
+        branchRows & {queryRow};
 
 GetNavTableRows = (branches as list) as list => 
     let
@@ -3270,13 +3285,33 @@ CleanUserInputList = (inputList as any) as list =>
 // direct query-by-ID / ad-hoc leaves, plus a browsable tree of saved queries (by
 // category/type/format).
 //
+// The whole feature is parameterised by (product, module), threaded through every function
+// below, rather than fixed globals: RE always uses module "None" (see GetRENXTNavTableRows),
+// while FE requires one of the modules in FEModules below (see GetFENXTNavTableRows /
+// GetFEQueryModuleNavTable) - there is one full copy of the browse/query tree per FE module.
+//
 // formattingMode, sqlGenerationMode, and outputFormat are intentionally NOT exposed as
 // parameters anywhere in this feature - they are fixed to "UI" / "Query" / "Csv" inside
 // GetQueryResultsTable. If that ever needs to change, it only needs to change in one place.
 // =======================================================================================
 
-Product = "RE";
-Module = "None";
+// FE modules, per the SKY API's Module enum (RE requests must use "None" instead - see
+// GetRENXTNavTableRows). Keyed by the exact API enum value; display names are resx-localized.
+FEModules = {"GeneralLedger", "AccountsPayable", "AccountsReceivable", "FixedAssets", "CashReceipts"};
+
+// Human-readable module names ("General Ledger") shown in the Module folder names and, via
+// FEModuleParameterType, the "Query by ID"/"Ad hoc query" parameter dropdown - the SKY API itself
+// only accepts the no-space codes above, so GetFEModuleCodeFromDisplayName translates back.
+FEModuleDisplayNames = List.Transform(FEModules, each Extension.LoadString(_));
+
+GetFEModuleCodeFromDisplayName = (displayName as text) as text =>
+    let
+        index = List.PositionOf(FEModuleDisplayNames, displayName)
+    in
+        if index = -1 then
+            error Error.Record("InvalidModule", "Unrecognized Module value: " & displayName, [Module = displayName])
+        else
+            FEModules{index};
 
 POLL_MAX_RETRIES = 36;
 POLL_DELAY_SECONDS = 5;
@@ -3290,7 +3325,9 @@ Record.RemoveNullFields = Extension.LoadFunction("Record.RemoveNullFields.pqm");
 // --------------------------------------------------------------------------------
 // Direct query functions (Query folder leaves: "Query by ID" / "Ad hoc query")
 // --------------------------------------------------------------------------------
-GetQueryByIdFunction =
+// product/module are bound per Query folder (see GetRENXTNavTableRows/GetFENXTNavTableRows) -
+// not user-supplied, hence this is a factory returning the actual invocable function value.
+GetQueryByIdFunction = (product as text, module as text) =>
     let
         impl = (
             queryId as number,
@@ -3300,7 +3337,7 @@ GetQueryByIdFunction =
             optional askFields as nullable text,
             optional previewData as nullable logical
         ) as table =>
-            GetQueryResultsTable(queryId, timeZoneOffsetInMinutes, useStaticQuery, displayCodeTableLongDescription, askFields, previewData),
+            GetQueryResultsTable(product, module, queryId, timeZoneOffsetInMinutes, useStaticQuery, displayCodeTableLongDescription, askFields, previewData),
 
         docs = type function (
             queryId as QueryIdParameterType,
@@ -3324,7 +3361,8 @@ GetQueryByIdFunction =
         Value.ReplaceType(impl, docs);
 
 // askFields is not applicable to ad hoc execution, so it is passed as null to GetQueryResultsTable.
-GetAdHocQueryFunction =
+// product/module are bound per Query folder - see GetQueryByIdFunction above.
+GetAdHocQueryFunction = (product as text, module as text) =>
     let
         impl = (
             queryDefinition as text,
@@ -3333,7 +3371,7 @@ GetAdHocQueryFunction =
             optional displayCodeTableLongDescription as nullable logical,
             optional previewData as nullable logical
         ) as table =>
-            GetQueryResultsTable(queryDefinition, timeZoneOffsetInMinutes, useStaticQuery, displayCodeTableLongDescription, null, previewData),
+            GetQueryResultsTable(product, module, queryDefinition, timeZoneOffsetInMinutes, useStaticQuery, displayCodeTableLongDescription, null, previewData),
 
         docs = type function (
             queryDefinition as QueryDefinitionParameterType,
@@ -3355,6 +3393,78 @@ GetAdHocQueryFunction =
     in
         Value.ReplaceType(impl, docs);
 
+// FE counterparts of the two functions above, sitting at the top of the "Financial Edge NXT
+// Query" folder rather than inside a specific module folder (see GetFEQueryModuleNavTable) - so,
+// unlike GetQueryByIdFunction/GetAdHocQueryFunction, module is not bound in advance via the
+// factory; it's a required parameter of the returned function itself instead.
+GetFEQueryByIdFunction = (product as text) =>
+    let
+        impl = (
+            queryId as number,
+            module as text,
+            optional timeZoneOffsetInMinutes as nullable number,
+            optional useStaticQuery as nullable logical,
+            optional displayCodeTableLongDescription as nullable logical,
+            optional askFields as nullable text,
+            optional previewData as nullable logical
+        ) as table =>
+            GetQueryResultsTable(product, GetFEModuleCodeFromDisplayName(module), queryId, timeZoneOffsetInMinutes, useStaticQuery, displayCodeTableLongDescription, askFields, previewData),
+
+        docs = type function (
+            queryId as QueryIdParameterType,
+            module as FEModuleParameterType,
+            optional timeZoneOffsetInMinutes as TimeZoneOffsetInMinutesParameterType,
+            optional useStaticQuery as UseStaticQueryParameterType,
+            optional displayCodeTableLongDescription as DisplayCodeTableLongDescriptionParameterType,
+            optional askFields as AskFieldsParameterType,
+            optional previewData as PreviewDataParameterType
+        ) as table meta [
+            Documentation.Name = "GetQueryResults",
+            Documentation.LongDescription = Extension.LoadString("QueryByIdFunction.Documentation.LongDescription"),
+            Documentation.Examples = {
+                [
+                    Description = Extension.LoadString("QueryByIdFunction.Example.Description"),
+                    Code = "= GetQueryResults(918, ""General Ledger"", -240, false, false, null, true)",
+                    Result = Extension.LoadString("QueryByIdFunction.Example.Result")
+                ]
+            }
+        ]
+    in
+        Value.ReplaceType(impl, docs);
+
+GetFEAdHocQueryFunction = (product as text) =>
+    let
+        impl = (
+            queryDefinition as text,
+            module as text,
+            optional timeZoneOffsetInMinutes as nullable number,
+            optional useStaticQuery as nullable logical,
+            optional displayCodeTableLongDescription as nullable logical,
+            optional previewData as nullable logical
+        ) as table =>
+            GetQueryResultsTable(product, GetFEModuleCodeFromDisplayName(module), queryDefinition, timeZoneOffsetInMinutes, useStaticQuery, displayCodeTableLongDescription, null, previewData),
+
+        docs = type function (
+            queryDefinition as QueryDefinitionParameterType,
+            module as FEModuleParameterType,
+            optional timeZoneOffsetInMinutes as TimeZoneOffsetInMinutesParameterType,
+            optional useStaticQuery as UseStaticQueryParameterType,
+            optional displayCodeTableLongDescription as DisplayCodeTableLongDescriptionParameterType,
+            optional previewData as PreviewDataParameterType
+        ) as table meta [
+            Documentation.Name = "GetQueryResults",
+            Documentation.LongDescription = Extension.LoadString("AdHocQueryFunction.Documentation.LongDescription"),
+            Documentation.Examples = {
+                [
+                    Description = Extension.LoadString("AdHocQueryFunction.Example.Description"),
+                    Code = "= GetQueryResults(queryJson, ""General Ledger"", -240, false, false, true)",
+                    Result = Extension.LoadString("AdHocQueryFunction.Example.Result")
+                ]
+            }
+        ]
+    in
+        Value.ReplaceType(impl, docs);
+
 // --------------------------------------------------------------------------------
 // Parameter types with UI metadata
 // --------------------------------------------------------------------------------
@@ -3362,6 +3472,16 @@ QueryIdParameterType = type number meta [
     Documentation.FieldCaption = Extension.LoadString("QueryIdParameterType.FieldCaption"),
     Documentation.FieldDescription = Extension.LoadString("QueryIdParameterType.FieldDescription"),
     Documentation.SampleValues = {"506, 918"}
+];
+
+// Only used by the FE "Query by ID"/"Ad hoc query" functions (see GetFEQueryByIdFunction /
+// GetFEAdHocQueryFunction) - RE always uses module "None" internally, with no user-facing prompt.
+// The dropdown shows human-readable names ("General Ledger"); GetFEModuleCodeFromDisplayName
+// translates the selected value back to the API's no-space code before it's ever used.
+FEModuleParameterType = type text meta [
+    Documentation.FieldCaption = Extension.LoadString("FEModuleParameterType.FieldCaption"),
+    Documentation.FieldDescription = Extension.LoadString("FEModuleParameterType.FieldDescription"),
+    Documentation.AllowedValues = FEModuleDisplayNames
 ];
 
 QueryDefinitionParameterType = type text meta [
@@ -3417,24 +3537,24 @@ PreviewDataParameterType = type nullable logical meta [
 // --------------------------------------------------------------------------------
 // Query navigation tables (Query folder: browse saved queries, or run directly by ID/ad hoc)
 // --------------------------------------------------------------------------------
-GetQueryNavTable = () as table =>
+// The "browse" rows shared by every Query folder variant: All queries/My queries/Favorites/Merged
+// queries/Categories/Types/Format. Used directly by RE (via GetQueryNavTable below) and, on its
+// own (without the direct-execution rows), by each FE module folder - see GetFEQueryModuleNavTable.
+GetQueryBrowseRows = (product as text, module as text) as list =>
+    {
+        {"allQueries", GetQueryListNavTable(product, module, null, null, null, false, false, false), "Folder", "Folder", false},
+        {"myQueries", GetQueryListNavTable(product, module, null, null, null, true, false, false), "Folder", "Folder", false},
+        {"favorites", GetQueryListNavTable(product, module, null, null, null, false, true, false), "Folder", "Folder", false},
+        {"mergedQueries", GetQueryListNavTable(product, module, null, null, null, false, false, true), "Folder", "Folder", false},
+        {"categories", GetQueryCategoryNavTable(product, module), "Folder", "Folder", false},
+        {"types", GetQueryTypeNavTable(product, module), "Folder", "Folder", false},
+        {"format", GetQueryFormatNavTable(product, module), "Folder", "Folder", false}
+    };
+
+// Turns a list of {Key, Data, ItemKind, ItemName, IsLeaf} rows into a Navigator table, looking up
+// each row's localized display name from its Key (matching resources.resx entries).
+BuildQueryNavTable = (rows as list) as table =>
     let
-        rows = {
-            {"allQueries", GetQueryListNavTable(null, null, null, false, false, false), "Folder", "Folder", false},
-            {"myQueries", GetQueryListNavTable(null, null, null, true, false, false), "Folder", "Folder", false},
-            {"favorites", GetQueryListNavTable(null, null, null, false, true, false), "Folder", "Folder", false},
-            {"mergedQueries", GetQueryListNavTable(null, null, null, false, false, true), "Folder", "Folder", false},
-            {"categories", GetQueryCategoryNavTable(), "Folder", "Folder", false},
-            {"types", GetQueryTypeNavTable(), "Folder", "Folder", false},
-            {"format", GetQueryFormatNavTable(), "Folder", "Folder", false},
-
-            // ItemName = null on Function rows opts them out of Preview.DelayColumn so the
-            // Navigator renders the inline parameter-entry form (see Table.ToNavigationTable.pqm).
-            {"queryById", GetQueryByIdFunction, "Function", null, true},
-            {"adHocQuery", GetAdHocQueryFunction, "Function", null, true}
-        },
-
-        // insert the localized name for each node
         rowsWithName = List.Transform(rows, each
             List.InsertRange(_, 0, { Extension.LoadString(_{0}) })
         ),
@@ -3448,7 +3568,25 @@ GetQueryNavTable = () as table =>
     in
         result;
 
+// ItemName = null on Function rows opts them out of Preview.DelayColumn so the Navigator renders
+// the inline parameter-entry form (see Table.ToNavigationTable.pqm).
+GetQueryNavTable = (product as text, module as text) as table =>
+    BuildQueryNavTable(
+        GetQueryBrowseRows(product, module) & {
+            {"queryById", GetQueryByIdFunction(product, module), "Function", null, true},
+            {"adHocQuery", GetAdHocQueryFunction(product, module), "Function", null, true}
+        }
+    );
+
+// FE per-module folders (see GetFEQueryModuleNavTable): browsing only, no direct-execution rows -
+// "Query by ID"/"Ad hoc query" live once at the top FE level instead, with module as a required
+// parameter, rather than once per module.
+GetQueryBrowseNavTable = (product as text, module as text) as table =>
+    BuildQueryNavTable(GetQueryBrowseRows(product, module));
+
 GetQueryListNavTable = (
+    product as text,
+    module as text,
     categoryId as nullable number,
     typeId as nullable number,
     format as nullable text,
@@ -3466,7 +3604,7 @@ GetQueryListNavTable = (
                     optional displayCodeTableLongDescription as nullable logical,
                     optional previewData as nullable logical
                 ) =>
-                    GetQueryResultsTable(queryId, timeZoneOffsetInMinutes, useStaticQuery, displayCodeTableLongDescription, null, previewData),
+                    GetQueryResultsTable(product, module, queryId, timeZoneOffsetInMinutes, useStaticQuery, displayCodeTableLongDescription, null, previewData),
 
                 curriedDocs = type function (
                     optional timeZoneOffsetInMinutes as TimeZoneOffsetInMinutesParameterType,
@@ -3512,7 +3650,7 @@ GetQueryListNavTable = (
                     optional displayCodeTableLongDescription as nullable logical,
                     optional previewData as nullable logical
                 ) =>
-                    GetQueryResultsTable(queryId, timeZoneOffsetInMinutes, useStaticQuery, displayCodeTableLongDescription, askFields, previewData),
+                    GetQueryResultsTable(product, module, queryId, timeZoneOffsetInMinutes, useStaticQuery, displayCodeTableLongDescription, askFields, previewData),
 
                 curriedDocs = type function (
                     askFields as RequiredAskFieldsParameterType,
@@ -3547,7 +3685,7 @@ GetQueryListNavTable = (
                 Value.ReplaceType(curried, curriedDocs),
 
         // get the set of queries
-        queries = GetQueryListTable(categoryId, typeId, format, myQueriesOnly, favoritesOnly, mergedQueriesOnly),
+        queries = GetQueryListTable(product, module, categoryId, typeId, format, myQueriesOnly, favoritesOnly, mergedQueriesOnly),
 
         // Transform the table to a list of navigation records
         navTableList = Table.TransformRows(queries, each [
@@ -3578,14 +3716,14 @@ GetQueryListNavTable = (
     in
         result;
 
-GetQueryCategoryNavTable = () as table =>
+GetQueryCategoryNavTable = (product as text, module as text) as table =>
     let
-        categories = GetQueryCategoryTable(),
+        categories = GetQueryCategoryTable(product, module),
 
         navTableList = Table.TransformRows(categories, each [
             Key = [id],
             Name = [name],
-            Data = GetQueryListNavTable([id], null, null, false, false, false),
+            Data = GetQueryListNavTable(product, module, [id], null, null, false, false, false),
             ItemKind = "Folder",
             ItemName = "Folder",
             IsLeaf = false
@@ -3597,14 +3735,14 @@ GetQueryCategoryNavTable = () as table =>
     in
         result;
 
-GetQueryTypeNavTable = () as table =>
+GetQueryTypeNavTable = (product as text, module as text) as table =>
     let
-        types = GetQueryTypeTable(),
+        types = GetQueryTypeTable(product, module),
 
         navTableList = Table.TransformRows(types, each [
             Key = [id],
             Name = [name],
-            Data = GetQueryListNavTable(null, [id], null, false, false, false),
+            Data = GetQueryListNavTable(product, module, null, [id], null, false, false, false),
             ItemKind = "Folder",
             ItemName = "Folder",
             IsLeaf = false
@@ -3616,14 +3754,14 @@ GetQueryTypeNavTable = () as table =>
     in
         result;
 
-GetQueryFormatNavTable = () as table =>
+GetQueryFormatNavTable = (product as text, module as text) as table =>
     let
         formats = {"dynamic", "static"},
 
         navTableList = List.Transform(formats, each [
             Key = _,
             Name = Extension.LoadString(_),
-            Data = GetQueryListNavTable(null, null, _, false, false, false),
+            Data = GetQueryListNavTable(product, module, null, null, _, false, false, false),
             ItemKind = "Folder",
             ItemName = "Folder",
             IsLeaf = false
@@ -3635,20 +3773,37 @@ GetQueryFormatNavTable = () as table =>
     in
         result;
 
+// Top-level folder for the "Financial Edge NXT Query" branch (see GetFENXTNavTableRows): one
+// sub-folder per FE module, each containing its own full copy of the browse/query tree - unlike
+// RE, FE has no single "None" module, so module has to be chosen by which folder the user opens.
+// Top-level folder for the "Financial Edge NXT Query" branch (see GetFENXTNavTableRows): one
+// browse-only sub-folder per FE module, sitting alongside "Query by ID"/"Ad hoc query" - those two
+// don't need a module chosen in advance (they run a specific, already-known query), so they take
+// module as a required parameter instead of being duplicated once per module folder.
+GetFEQueryModuleNavTable = () as table =>
+    let
+        moduleRows = List.Transform(FEModules, each {_, GetQueryBrowseNavTable("FE", _), "Folder", "Folder", false}),
+        functionRows = {
+            {"queryById", GetFEQueryByIdFunction("FE"), "Function", null, true},
+            {"adHocQuery", GetFEAdHocQueryFunction("FE"), "Function", null, true}
+        }
+    in
+        BuildQueryNavTable(moduleRows & functionRows);
+
 // --------------------------------------------------------------------------------
 // Query SKY API functions
 // --------------------------------------------------------------------------------
 
 // https://developer.sky.blackbaud.com/api#api=query&operation=GetQueryCategories
-GetQueryCategoryTable = () as table =>
+GetQueryCategoryTable = (product as text, module as text) as table =>
     let
         response = Web.ContentsCustomRetry(
             BaseUrl,
             [
                 RelativePath = "/query/categories",
                 Query = [
-                    product = Product,
-                    module = Module
+                    product = product,
+                    module = module
                 ],
                 Headers = DefaultRequestHeaders
             ]
@@ -3661,15 +3816,15 @@ GetQueryCategoryTable = () as table =>
         result;
 
 // https://developer.sky.blackbaud.com/api#api=query&operation=GetQueryTypes
-GetQueryTypeTable = () as table =>
+GetQueryTypeTable = (product as text, module as text) as table =>
     let
         response = Web.ContentsCustomRetry(
             BaseUrl,
             [
                 RelativePath = "/query/querytypes",
                 Query = [
-                    product = Product,
-                    module = Module
+                    product = product,
+                    module = module
                 ],
                 Headers = DefaultRequestHeaders
             ]
@@ -3683,6 +3838,8 @@ GetQueryTypeTable = () as table =>
 
 // https://developer.sky.blackbaud.com/api#api=query&operation=GetQueryList
 GetQueryListPageByOffset = (
+    product as text,
+    module as text,
     categoryId as nullable number,
     typeId as nullable number,
     format as nullable text,
@@ -3699,8 +3856,8 @@ GetQueryListPageByOffset = (
             [
                 RelativePath = "/query/queries",
                 Query = Record.RemoveNullFields([
-                    product = Product,
-                    module = Module,
+                    product = product,
+                    module = module,
                     category = TextOrNull(categoryId),
                     query_type_id = TextOrNull(typeId),
                     query_format = format,
@@ -3728,6 +3885,8 @@ GetQueryListPageByOffset = (
         data meta [Count = count, Offset = new_offset];
 
 GetQueryListTable = (
+    product as text,
+    module as text,
     categoryId as nullable number,
     typeId as nullable number,
     format as nullable text,
@@ -3753,6 +3912,8 @@ GetQueryListTable = (
                 page =
                     if (count > offset) then
                         GetQueryListPageByOffset(
+                            product,
+                            module,
                             categoryId,
                             typeId,
                             format,
@@ -3776,15 +3937,15 @@ GetQueryListTable = (
         result;
 
 // https://developer.sky.blackbaud.com/api#api=query&operation=GetJob
-GetQueryStatus = (jobId as text, retry as number, includeReadUrlMode as text) as record =>
+GetQueryStatus = (product as text, module as text, jobId as text, retry as number, includeReadUrlMode as text) as record =>
     let
         response = Web.ContentsCustomRetry(
             BaseUrl,
             [
                 RelativePath = "/query/jobs/" & Text.Trim(jobId),
                 Query = [
-                    product = Product,
-                    module = Module,
+                    product = product,
+                    module = module,
                     include_read_url = includeReadUrlMode,
                     content_disposition = "Attachment",
                     _retry = Text.From(retry),
@@ -3799,6 +3960,8 @@ GetQueryStatus = (jobId as text, retry as number, includeReadUrlMode as text) as
 
 // https://developer.sky.blackbaud.com/api#api=query&operation=StartQueryExecutionJobByID
 StartQueryJob = (
+    product as text,
+    module as text,
     queryId as number,
     formattingMode as text,
     sqlGenerationMode as text,
@@ -3814,8 +3977,8 @@ StartQueryJob = (
             [
                 RelativePath = "/query/queries/executebyid",
                 Query = [
-                    product = Product,
-                    module = Module,
+                    product = product,
+                    module = module,
                     _ts = GetTimestamp()
                 ],
                 Headers = QueryRequestHeaders,
@@ -3842,6 +4005,8 @@ StartQueryJob = (
 
 // https://developer.sky.blackbaud.com/api#api=query&operation=StartQueryExecutionJob
 StartAdHocQueryJob = (
+    product as text,
+    module as text,
     query as text,
     formattingMode as text,
     sqlGenerationMode as text,
@@ -3856,8 +4021,8 @@ StartAdHocQueryJob = (
             [
                 RelativePath = "/query/queries/execute",
                 Query = [
-                    product = Product,
-                    module = Module,
+                    product = product,
+                    module = module,
                     _ts = GetTimestamp()
                 ],
                 Headers = QueryRequestHeaders,
@@ -3914,6 +4079,8 @@ OutputFormatToTable = (resultBinary as binary, outputFormat as text) as table =>
         result;
 
 GetQueryResultsTable = (
+    product as text,
+    module as text,
     queryIdOrDefinition as any,
     timeZoneOffsetInMinutes as nullable number,
     useStaticQuery as nullable logical,
@@ -3940,9 +4107,9 @@ GetQueryResultsTable = (
                 "Starting RENXT query request. Mode = " & Text.From(queryIdOrDefinition is number),
                 try
                     if Type.Is(Value.Type(queryIdOrDefinition), Number.Type) then
-                        StartQueryJob(queryIdOrDefinition, _formattingMode, _sqlGenerationMode, _outputFormat, _timeZoneOffsetInMinutes, _useStaticQuery, _displayCodeTableLongDescription, _askFields)
+                        StartQueryJob(product, module, queryIdOrDefinition, _formattingMode, _sqlGenerationMode, _outputFormat, _timeZoneOffsetInMinutes, _useStaticQuery, _displayCodeTableLongDescription, _askFields)
                     else
-                        StartAdHocQueryJob(queryIdOrDefinition, _formattingMode, _sqlGenerationMode, _outputFormat, _timeZoneOffsetInMinutes, _useStaticQuery, _displayCodeTableLongDescription)
+                        StartAdHocQueryJob(product, module, queryIdOrDefinition, _formattingMode, _sqlGenerationMode, _outputFormat, _timeZoneOffsetInMinutes, _useStaticQuery, _displayCodeTableLongDescription)
             ),
 
         startJson =
@@ -3966,7 +4133,7 @@ GetQueryResultsTable = (
                 timestamp = DateTime.ToText(DateTime.LocalNow(), "yyyy-MM-dd HH:mm:ss"),
                 _ = if retry > maxRetries then error Error.Record("QueryJobError", Text.Format(Extension.LoadString("maxRetriesExceededWithJobId"), {jobId}), [JobId = jobId]) else null,
 
-                statusJson = Diagnostics.Trace(TraceLevel.Information, timestamp & " - Polling job status. Attempt = " & Text.From(retry), GetQueryStatus(jobId, retry, _includeReadUrlMode)),
+                statusJson = Diagnostics.Trace(TraceLevel.Information, timestamp & " - Polling job status. Attempt = " & Text.From(retry), GetQueryStatus(product, module, jobId, retry, _includeReadUrlMode)),
                 status = Diagnostics.Trace(TraceLevel.Information, timestamp & " - Polling attempt " & Text.From(retry) & ": Last status = " & statusJson[status], statusJson[status]),
                 readUri =
                     if Record.HasFields(statusJson, {"read_url"}) and statusJson[read_url] <> null then
