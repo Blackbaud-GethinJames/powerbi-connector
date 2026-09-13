@@ -178,6 +178,15 @@
   <data name="static" xml:space="preserve">
     <value>Static</value>
   </data>
+  <data name="resultLayout" xml:space="preserve">
+    <value>Result Layout</value>
+  </data>
+  <data name="MultiRow" xml:space="preserve">
+    <value>Multi-row</value>
+  </data>
+  <data name="SingleRow" xml:space="preserve">
+    <value>Single-row</value>
+  </data>
   <data name="queryById" xml:space="preserve">
     <value>Query by ID</value>
   </data>

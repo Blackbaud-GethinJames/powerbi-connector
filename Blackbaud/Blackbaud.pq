@@ -3548,7 +3548,8 @@ GetQueryBrowseRows = (product as text, module as text) as list =>
         {"mergedQueries", GetQueryListNavTable(product, module, null, null, null, false, false, true), "Folder", "Folder", false},
         {"categories", GetQueryCategoryNavTable(product, module), "Folder", "Folder", false},
         {"types", GetQueryTypeNavTable(product, module), "Folder", "Folder", false},
-        {"format", GetQueryFormatNavTable(product, module), "Folder", "Folder", false}
+        {"format", GetQueryFormatNavTable(product, module), "Folder", "Folder", false},
+        {"resultLayout", GetQueryResultLayoutNavTable(product, module), "Folder", "Folder", false}
     };
 
 // Turns a list of {Key, Data, ItemKind, ItemName, IsLeaf} rows into a Navigator table, looking up
@@ -3592,7 +3593,8 @@ GetQueryListNavTable = (
     format as nullable text,
     myQueriesOnly as logical,
     favoritesOnly as logical,
-    mergedQueriesOnly as logical
+    mergedQueriesOnly as logical,
+    optional resultLayout as nullable text
 ) as table =>
     let
         // define a curried function with `id` and `name` bound per row
@@ -3685,7 +3687,7 @@ GetQueryListNavTable = (
                 Value.ReplaceType(curried, curriedDocs),
 
         // get the set of queries
-        queries = GetQueryListTable(product, module, categoryId, typeId, format, myQueriesOnly, favoritesOnly, mergedQueriesOnly),
+        queries = GetQueryListTable(product, module, categoryId, typeId, format, myQueriesOnly, favoritesOnly, mergedQueriesOnly, resultLayout),
 
         // Transform the table to a list of navigation records
         navTableList = Table.TransformRows(queries, each [
@@ -3773,9 +3775,25 @@ GetQueryFormatNavTable = (product as text, module as text) as table =>
     in
         result;
 
-// Top-level folder for the "Financial Edge NXT Query" branch (see GetFENXTNavTableRows): one
-// sub-folder per FE module, each containing its own full copy of the browse/query tree - unlike
-// RE, FE has no single "None" module, so module has to be chosen by which folder the user opens.
+GetQueryResultLayoutNavTable = (product as text, module as text) as table =>
+    let
+        resultLayouts = {"MultiRow", "SingleRow"},
+
+        navTableList = List.Transform(resultLayouts, each [
+            Key = _,
+            Name = Extension.LoadString(_),
+            Data = GetQueryListNavTable(product, module, null, null, null, false, false, false, _),
+            ItemKind = "Folder",
+            ItemName = "Folder",
+            IsLeaf = false
+        ]),
+
+        navTable = Table.FromRecords(navTableList),
+
+        result = Table.ToNavigationTable(navTable, {"Key"}, "Name", "Data", "ItemKind", "ItemName", "IsLeaf")
+    in
+        result;
+
 // Top-level folder for the "Financial Edge NXT Query" branch (see GetFENXTNavTableRows): one
 // browse-only sub-folder per FE module, sitting alongside "Query by ID"/"Ad hoc query" - those two
 // don't need a module chosen in advance (they run a specific, already-known query), so they take
@@ -3836,8 +3854,12 @@ GetQueryTypeTable = (product as text, module as text) as table =>
     in
         result;
 
-// https://developer.sky.blackbaud.com/api#api=query&operation=GetQueryList
-GetQueryListPageByOffset = (
+// v2 - not v1's GET /query/queries, which will only ever return MultiRow queries (per Blackbaud's
+// single-row result layout preview doc) and so can never show SingleRow/Export-style saved
+// queries. v2 matches v1's request/response shape otherwise, with one exception: it has no
+// `offset` parameter at all - paging is continuation_token-based instead (see GetQueryListTable).
+// https://developer.sky.blackbaud.com/api#api=query&operation=GetQueryListV2
+GetQueryListPage = (
     product as text,
     module as text,
     categoryId as nullable number,
@@ -3846,7 +3868,8 @@ GetQueryListPageByOffset = (
     myQueriesOnly as logical,
     favoritesOnly as logical,
     mergedQueriesOnly as logical,
-    offset as number
+    resultLayout as nullable text,
+    continuationToken as nullable text
 ) as table =>
     let
         pageSize = 200,
@@ -3854,7 +3877,7 @@ GetQueryListPageByOffset = (
         response = Web.ContentsCustomRetry(
             BaseUrl,
             [
-                RelativePath = "/query/queries",
+                RelativePath = "/query/v2/queries",
                 Query = Record.RemoveNullFields([
                     product = product,
                     module = module,
@@ -3864,25 +3887,20 @@ GetQueryListPageByOffset = (
                     my_queries_only = TrueOrNull(myQueriesOnly),
                     my_fav_queries_only = TrueOrNull(favoritesOnly),
                     merged_queries_only = TrueOrNull(mergedQueriesOnly),
+                    result_layout = resultLayout,
                     limit = Text.From(pageSize),
-                    offset = Text.From(offset)
+                    continuation_token = continuationToken
                 ]),
                 Headers = DefaultRequestHeaders
             ]
         ),
         bodyJson = Json.Document(response),
         queries = try bodyJson[queries] otherwise {},
-        count = try bodyJson[count] otherwise 0,
-
-        new_offset =
-            if (count > 0 and count >= offset) then
-                offset + pageSize
-            else
-                count,
+        nextContinuationToken = try bodyJson[continuation_token] otherwise null,
 
         data = Table.FromRecords(queries, null, MissingField.UseNull)
     in
-        data meta [Count = count, Offset = new_offset];
+        data meta [ContinuationToken = nextContinuationToken];
 
 GetQueryListTable = (
     product as text,
@@ -3892,26 +3910,28 @@ GetQueryListTable = (
     format as nullable text,
     myQueriesOnly as logical,
     favoritesOnly as logical,
-    mergedQueriesOnly as logical
+    mergedQueriesOnly as logical,
+    optional resultLayout as nullable text
 ) as table =>
     let
         allResults = Table.GenerateByPage((previous) =>
             let
-                offset =
+                // On the first call, previous is null, so there is no continuation token yet but
+                // we still need to fetch page 1. On every later call, a null ContinuationToken
+                // means the previous page said there was nothing more - stop.
+                continuationToken =
                     if (previous = null) then
-                        0
+                        null
                     else
-                        Value.Metadata(previous)[Offset]?,
+                        Value.Metadata(previous)[ContinuationToken]?,
 
-                count =
-                    if (previous = null) then
-                        1
-                    else
-                        Value.Metadata(previous)[Count]?,
+                isDone = previous <> null and continuationToken = null,
 
                 page =
-                    if (count > offset) then
-                        GetQueryListPageByOffset(
+                    if (isDone) then
+                        null
+                    else
+                        GetQueryListPage(
                             product,
                             module,
                             categoryId,
@@ -3920,10 +3940,9 @@ GetQueryListTable = (
                             myQueriesOnly,
                             favoritesOnly,
                             mergedQueriesOnly,
-                            offset
+                            resultLayout,
+                            continuationToken
                         )
-                    else
-                        null
             in
                 page
         ),
