@@ -89,6 +89,8 @@ Each Query folder also has two functions for running a query without browsing to
 - **Query ID** — runs a saved query by its numeric ID.
 - **Adhoc Query JSON** — runs a query definition you supply as JSON yourself, without it needing to be saved first.
 
+**A note on quoting:** if you copy an ad hoc definition out of Power Query M code, it will have doubled quotes (`""name""`) — that's M's own string escaping, not part of the JSON. When pasting into the parameter box, those need to be single quotes (`"name"`). The connector will tell you if the JSON can't be parsed.
+
 For Financial Edge NXT, both of these also require a **Module** parameter, since Financial Edge has no single "all modules" option.
 
 #### Other query parameters

@@ -4119,28 +4119,58 @@ GetQueryResultsTable = (
         _askFields = askFields,
         _previewData = if previewData = null then false else previewData,
         _includeReadUrlMode = if _previewData then "OnceRunning" else "OnceCompleted",
+
+        // An ad hoc definition is raw JSON text supplied by the user, so parse-check it here -
+        // before the try below, which would otherwise rewrite a malformed payload as a generic
+        // job-start failure. The usual cause is JSON copied out of Power Query M code, where a
+        // literal " is escaped as "": valid in M source, but not valid JSON once it reaches here.
+        _queryIdOrDefinition =
+            if Type.Is(Value.Type(queryIdOrDefinition), Number.Type) then
+                queryIdOrDefinition
+            else
+                let
+                    parseAttempt = try Json.Document(queryIdOrDefinition)
+                in
+                    if parseAttempt[HasError] then
+                        error Error.Record(
+                            "QueryDefinitionError",
+                            Extension.LoadString("adHocQueryJsonInvalid"),
+                            [OriginalError = parseAttempt[Error]]
+                        )
+                    else
+                        queryIdOrDefinition,
+
         // start a query execution job
         startAttempt =
             Diagnostics.Trace(
                 TraceLevel.Information,
-                "Starting RENXT query request. Mode = " & Text.From(queryIdOrDefinition is number),
+                "Starting RENXT query request. Mode = " & Text.From(_queryIdOrDefinition is number),
                 try
-                    if Type.Is(Value.Type(queryIdOrDefinition), Number.Type) then
-                        StartQueryJob(product, module, queryIdOrDefinition, _formattingMode, _sqlGenerationMode, _outputFormat, _timeZoneOffsetInMinutes, _useStaticQuery, _displayCodeTableLongDescription, _askFields)
+                    if Type.Is(Value.Type(_queryIdOrDefinition), Number.Type) then
+                        StartQueryJob(product, module, _queryIdOrDefinition, _formattingMode, _sqlGenerationMode, _outputFormat, _timeZoneOffsetInMinutes, _useStaticQuery, _displayCodeTableLongDescription, _askFields)
                     else
-                        StartAdHocQueryJob(product, module, queryIdOrDefinition, _formattingMode, _sqlGenerationMode, _outputFormat, _timeZoneOffsetInMinutes, _useStaticQuery, _displayCodeTableLongDescription)
+                        StartAdHocQueryJob(product, module, _queryIdOrDefinition, _formattingMode, _sqlGenerationMode, _outputFormat, _timeZoneOffsetInMinutes, _useStaticQuery, _displayCodeTableLongDescription)
             ),
 
         startJson =
             if startAttempt[HasError] then
-                error Error.Record(
-                    "QueryStartError",
-                    Extension.LoadString("queryStartFailedNoJobId"),
-                    [
-                        JobId = null,
-                        OriginalError = startAttempt[Error]
-                    ]
-                )
+                let
+                    // This wrapper catches every job-start failure - a rejected payload, auth, rate
+                    // limiting - so include the underlying message rather than only burying it in
+                    // OriginalError, where it takes a drill-down into the error record to find.
+                    underlyingMessage = Record.FieldOrDefault(startAttempt[Error], "Message", "")
+                in
+                    error Error.Record(
+                        "QueryStartError",
+                        if underlyingMessage <> "" then
+                            Text.Format(Extension.LoadString("queryStartFailedWithReason"), {underlyingMessage})
+                        else
+                            Extension.LoadString("queryStartFailedNoJobId"),
+                        [
+                            JobId = null,
+                            OriginalError = startAttempt[Error]
+                        ]
+                    )
             else
                 startAttempt[Value],
 

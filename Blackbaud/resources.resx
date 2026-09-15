@@ -285,6 +285,12 @@
   <data name="queryStartFailedNoJobId" xml:space="preserve">
     <value>Failed to submit query job. No Job ID was returned by the API.</value>
   </data>
+  <data name="queryStartFailedWithReason" xml:space="preserve">
+    <value>Failed to submit query job: #{0}</value>
+  </data>
+  <data name="adHocQueryJsonInvalid" xml:space="preserve">
+    <value>The Adhoc Query JSON could not be parsed as JSON. If you copied it from Power Query M code, note that a doubled quote ("") is M escaping - it needs to be a single quote (") here.</value>
+  </data>
   <data name="queryJobCanceledWithJobId" xml:space="preserve">
     <value>The RENXT query job was cancelled. Job ID: #{0}</value>
   </data>
