@@ -426,19 +426,19 @@ GetNavTableRows = (branches as list) as list =>
         rows;
 
 // Evaluate whether the current environment has Raiser's Edge NXT
-EnvironmentHasRENXT = () as logical => 
+EnvironmentHasRENXT = () as logical =>
     let
-        // this will use the Environment API in the future, for now just assume true
-        return = true or HasAccess("constituent/v1/titles")
+        // this will use the Environment API in the future, for now probe a representative endpoint
+        return = HasAccess("constituent/v1/titles")
     in
-        return;   
+        return;
 
 // Evaluate whether the current environment has Financial Edge NXT
 EnvironmentHasFENXT = () as logical =>
-    let 
-        // this will use the Environment API in the future, for now just assume true
-        return = true or HasAccess("generalledger/v1/transactioncodes")
-    in 
+    let
+        // this will use the Environment API in the future, for now probe a representative endpoint
+        return = HasAccess("generalledger/v1/transactioncodes")
+    in
         return;
 
 HasAccess = (route as text) as logical =>
