@@ -426,25 +426,39 @@ GetNavTableRows = (branches as list) as list =>
         rows;
 
 // Evaluate whether the current environment has Raiser's Edge NXT
+//
+// Failing open matters here: these run while the Navigator is being built, and GetNavigationTable
+// calls them from a plain `if`, so anything HasAccess throws propagates out of Blackbaud.Contents
+// and takes the whole Get Data experience with it - not just one branch. TestConnection also
+// builds the full Navigator, so a transient failure would break a gateway refresh's connection
+// test. Hiding a branch the user does have is worse than showing one they don't: an unusable
+// branch just 403s on click, which is how this behaved before the probes were live. The probe is
+// a convenience, not a security control - SKY API authorizes every endpoint server-side anyway.
 EnvironmentHasRENXT = () as logical =>
     let
         // this will use the Environment API in the future, for now probe a representative endpoint
-        return = HasAccess("constituent/v1/titles")
+        return = try HasAccess("constituent/v1/titles") otherwise true
     in
         return;
 
-// Evaluate whether the current environment has Financial Edge NXT
+// Evaluate whether the current environment has Financial Edge NXT - fails open, see above
 EnvironmentHasFENXT = () as logical =>
     let
         // this will use the Environment API in the future, for now probe a representative endpoint
-        return = HasAccess("generalledger/v1/transactioncodes")
+        return = try HasAccess("generalledger/v1/transactioncodes") otherwise true
     in
         return;
 
+// 429 is handled rather than thrown so a rate-limited probe reads as "reachable" instead of an
+// error. Anything else outside this list still throws, which the callers above absorb.
+//
+// Note this can't just delegate to Web.ContentsCustomRetry to pick up its 429 backoff: that helper
+// merges its own ManualStatusHandling = {429} last, which would overwrite the list below, and it
+// returns the buffered binary rather than the response, so there'd be no metadata to read a status from.
 HasAccess = (route as text) as logical =>
     let
         url = Uri.Combine(BaseUrl, route),
-        result = Web.Contents(url, [Headers = DefaultRequestHeaders, ManualStatusHandling={401, 403, 500}]),
+        result = Web.Contents(url, [Headers = DefaultRequestHeaders, ManualStatusHandling={401, 403, 429, 500}]),
         buffered = Binary.Buffer(result),
         status = if buffered = null then 0 else Value.Metadata(result)[Response.Status]
     in
@@ -2056,8 +2070,16 @@ EventParticipantsByEventIdDocs = type function (
 
 EventParticipantsByEventId = (eventId as text) as table =>
     let
-        participantsUrl = Uri.Combine(BaseUrl, "event/v1/events/" & eventId & "/participants"),
-        participants = GetAllPagesByOffset(participantsUrl, EventParticipantListType, DefaultRecLimit),
+        // The limit on the URL and the limit handed to the paginator must be the SAME value.
+        // GetPageByOffset advances the offset by whatever limit it is given, so if the API were
+        // left to apply its own default page size (500) instead, the offset would step past rows
+        // and silently skip them. Binding it once here keeps the two in step. The limit also has
+        // to be present on the URL at all because this calls GetAllPagesByOffset directly rather
+        // than via GetEntity (which is what normally appends it), and because GetPageByOffset's
+        // "&offset=" needs an existing query string to append to.
+        pageSize = DefaultRecLimit,
+        participantsUrl = Uri.Combine(BaseUrl, "event/v1/events/" & eventId & "/participants?limit=" & Number.ToText(pageSize)),
+        participants = GetAllPagesByOffset(participantsUrl, EventParticipantListType, pageSize),
         appliedSchema = Table.ChangeType(participants, EventParticipantListType)
     in
         appliedSchema;
@@ -3313,7 +3335,8 @@ GetFEModuleCodeFromDisplayName = (displayName as text) as text =>
         else
             FEModules{index};
 
-POLL_MAX_RETRIES = 36;
+// 60 polls x 5s = 5 minutes before a job that never reaches a terminal status is given up on.
+POLL_MAX_RETRIES = 60;
 POLL_DELAY_SECONDS = 5;
 
 // SKY API requires the subscription key on every request; POST query jobs additionally require a JSON content type
@@ -4180,7 +4203,6 @@ GetQueryResultsTable = (
         pollJob = (retry as number, maxRetries as number, pollSeconds as number) =>
             let
                 timestamp = DateTime.ToText(DateTime.LocalNow(), "yyyy-MM-dd HH:mm:ss"),
-                _ = if retry > maxRetries then error Error.Record("QueryJobError", Text.Format(Extension.LoadString("maxRetriesExceededWithJobId"), {jobId}), [JobId = jobId]) else null,
 
                 statusJson = Diagnostics.Trace(TraceLevel.Information, timestamp & " - Polling job status. Attempt = " & Text.From(retry), GetQueryStatus(product, module, jobId, retry, _includeReadUrlMode)),
                 status = Diagnostics.Trace(TraceLevel.Information, timestamp & " - Polling attempt " & Text.From(retry) & ": Last status = " & statusJson[status], statusJson[status]),
@@ -4200,6 +4222,12 @@ GetQueryResultsTable = (
                     error Error.Record("QueryJobError", Text.Format(Extension.LoadString("queryJobCanceledWithJobId"), {jobId}), [JobId = jobId])
                 else if status = "Failed" then
                     error Error.Record("QueryJobError", Text.Format(Extension.LoadString("queryJobFailedWithJobId"), {jobId}), [JobId = jobId])
+                else if retry >= maxRetries then
+                    // Give up rather than polling a job that is never going to reach a terminal
+                    // status. This check has to live here, in the branch that actually runs: as a
+                    // separate let binding it was never referenced, and M does not evaluate
+                    // bindings the `in` expression doesn't reach - so the ceiling never applied.
+                    error Error.Record("QueryJobError", Text.Format(Extension.LoadString("maxRetriesExceededWithJobId"), {jobId}), [JobId = jobId])
                 else
                     // otherwise, poll again after delaying
                     Function.InvokeAfter(() =>
